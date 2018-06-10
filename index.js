@@ -3,6 +3,7 @@ let express = require('express'),
     bodyParser = require('body-parser'),
     app = express(),
     request = require('request'),
+    cheerio = require('cheerio'),
     config = require('config'),
     images = require('./pics');
 
@@ -11,7 +12,7 @@ app.use(bodyParser.json());
 
 let users = {};
 
-app.listen(8989, () => console.log('Example app listening on port 8989!'));
+app.set('port', (process.env.PORT || 8080));
 
 app.get('/', (req, res) => res.send('Hello World!'));
 
@@ -25,7 +26,7 @@ app.post('/webhook', (req, res) => {
     if (body.object === 'page') {
 
         // Iterates over each entry - there may be multiple if batched
-        body.entry.forEach(function(entry) {
+        body.entry.forEach(function (entry) {
 
             // Gets the message. entry.messaging is an array, but
             // will only ever contain one message, so we get index 0
@@ -82,26 +83,26 @@ app.get('/webhook', (req, res) => {
     }
 });
 
-function getImage(type, sender_id){
+function getImage(type, sender_id) {
     // create user if doesn't exist
-    if(users[sender_id] === undefined){
+    if (users[sender_id] === undefined) {
         users = Object.assign({
-            [sender_id] : {
-                'cats_count' : 0,
-                'dogs_count' : 0
+            [sender_id]: {
+                'cats_count': 0,
+                'dogs_count': 0
             }
         }, users);
     }
 
     let count = images[type].length, // total available images by type
         user = users[sender_id], // // user requesting image
-        user_type_count = user[type+'_count'];
+        user_type_count = user[type + '_count'];
 
 
     // update user before returning image
     let updated_user = {
-        [sender_id] : Object.assign(user, {
-            [type+'_count'] : count === user_type_count + 1 ? 0 : user_type_count + 1
+        [sender_id]: Object.assign(user, {
+            [type + '_count']: count === user_type_count + 1 ? 0 : user_type_count + 1
         })
     };
     // update users
@@ -111,23 +112,18 @@ function getImage(type, sender_id){
     return images[type][user_type_count];
 }
 
-function askTemplate(text){
+function askTemplate(text) {
     return {
-        "attachment":{
-            "type":"template",
-            "payload":{
-                "template_type":"button",
+        "attachment": {
+            "type": "template",
+            "payload": {
+                "template_type": "button",
                 "text": text,
-                "buttons":[
+                "buttons": [
                     {
-                        "type":"postback",
-                        "title":"Cats",
-                        "payload":"CAT_PICS"
-                    },
-                    {
-                        "type":"postback",
-                        "title":"Dogs",
-                        "payload":"DOG_PICS"
+                        "type": "postback",
+                        "title": "Yes",
+                        "payload": "RECENT_POSTS"
                     }
                 ]
             }
@@ -135,13 +131,13 @@ function askTemplate(text){
     }
 }
 
-function imageTemplate(type, sender_id){
+function imageTemplate(type, sender_id) {
     return {
-        "attachment":{
-            "type":"image",
-            "payload":{
+        "attachment": {
+            "type": "image",
+            "payload": {
                 "url": getImage(type, sender_id),
-                "is_reusable":true
+                "is_reusable": true
             }
         }
     }
@@ -151,11 +147,32 @@ function imageTemplate(type, sender_id){
 function handleMessage(sender_psid, received_message) {
     let response;
 
+    console.log(received_message.text);
+
     // Check if the message contains text
     if (received_message.text) {
 
         // Create the payload for a basic text message
-        response = askTemplate();
+
+        let queryString = received_message.text;
+        request('http://jforjs.com?s='+ queryString , function(error, response, body) {
+            if (!error) {
+                var $ = cheerio.load(body);
+                var recentPosts = Array.from($(".entry-title a"));
+                recentPosts.forEach(function(post) {
+                    console.log($(post));
+                    response = {
+                        text : $(post).text() + '  ' + $(post).attr('href')
+                    }
+
+                    callSendAPI(sender_psid, response);
+                });
+
+                
+            } else {
+                console.log("We’ve encountered an error: " + error);
+            }
+        });
     }
 
     // Sends the response message
@@ -169,20 +186,34 @@ function handlePostback(sender_psid, received_postback) {
     let payload = received_postback.payload;
 
     // Set the response based on the postback payload
-    if (payload === 'CAT_PICS') {
-        response = imageTemplate('cats', sender_psid);
-        callSendAPI(sender_psid, response, function(){
-            callSendAPI(sender_psid, askTemplate('Show me more'));
+    if (payload === 'RECENT_POSTS') {
+
+        request('http://jforjs.com', function(error, response, body) {
+            if (!error) {
+                var $ = cheerio.load(body);
+                var recentPosts = Array.from($("#recent-posts-3 a"));
+                recentPosts.forEach(function(post) {
+                    response = {
+                        text : $(post).text() + '  ' + $(post).attr('href')
+                    }
+
+                    callSendAPI(sender_psid, response);
+                });
+
+                callSendAPI(sender_psid, askTemplate('Show me more'));
+                
+            } else {
+                console.log("We’ve encountered an error: " + error);
+            }
         });
-    } else if (payload === 'DOG_PICS') {
-        response = imageTemplate('dogs', sender_psid);
-        callSendAPI(sender_psid, response, function(){
-            callSendAPI(sender_psid, askTemplate('Show me more'));
-        });
-    } else if(payload === 'GET_STARTED'){
-        response = askTemplate('Are you a Cat or Dog Person?');
+
+        // callSendAPI(sender_psid, response, function () {
+        //     callSendAPI(sender_psid, askTemplate('Show me more'));
+        // });
+    } else if (payload === 'GET_STARTED') {
+        response = askTemplate('Welcome. Get the recent blog posts from jforjs.com ?');
         callSendAPI(sender_psid, response);
-    }
+    } 
     // Send the message to acknowledge the postback
 }
 
@@ -204,7 +235,7 @@ function callSendAPI(sender_psid, response, cb = null) {
         "json": request_body
     }, (err, res, body) => {
         if (!err) {
-            if(cb){
+            if (cb) {
                 cb();
             }
         } else {
@@ -212,3 +243,7 @@ function callSendAPI(sender_psid, response, cb = null) {
         }
     });
 }
+
+app.listen(app.get('port'), function() {
+    console.log('Express server started at PORT : ' + app.get('port'));
+});
